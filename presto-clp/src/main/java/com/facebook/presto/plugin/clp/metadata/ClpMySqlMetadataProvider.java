@@ -17,6 +17,7 @@ import com.facebook.airlift.log.Logger;
 import com.facebook.presto.plugin.clp.ClpColumnHandle;
 import com.facebook.presto.plugin.clp.ClpConfig;
 import com.facebook.presto.spi.SchemaTableName;
+import com.google.inject.Inject;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -39,6 +40,7 @@ public class ClpMySqlMetadataProvider
 
     private final ClpConfig config;
 
+    @Inject
     public ClpMySqlMetadataProvider(ClpConfig config)
     {
         try {

@@ -19,6 +19,7 @@ import com.facebook.presto.plugin.clp.ClpSplit;
 import com.facebook.presto.plugin.clp.ClpTableLayoutHandle;
 import com.facebook.presto.spi.SchemaTableName;
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -40,6 +41,7 @@ public class ClpMySqlSplitProvider
 
     private final ClpConfig config;
 
+    @Inject
     public ClpMySqlSplitProvider(ClpConfig config)
     {
         try {
