@@ -18,6 +18,7 @@ import com.facebook.presto.common.type.BigintType;
 import com.facebook.presto.common.type.BooleanType;
 import com.facebook.presto.common.type.DoubleType;
 import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.TimestampType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.plugin.clp.ClpColumnHandle;
@@ -31,6 +32,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+
+import static com.facebook.presto.plugin.clp.ClpUtils.KqlUtils.escapeKqlSpecialCharsForColumnName;
 
 public class ClpSchemaTree
 {
@@ -75,9 +78,10 @@ public class ClpSchemaTree
                 return DoubleType.DOUBLE;
             case ClpString:
             case VarString:
-            case DateString:
             case NullValue:
                 return VarcharType.VARCHAR;
+            case DateString:
+                return TimestampType.TIMESTAMP;
             case UnstructuredArray:
                 return new ArrayType(VarcharType.VARCHAR);
             case Boolean:
@@ -98,11 +102,14 @@ public class ClpSchemaTree
     public void addColumn(String fullName, byte type)
     {
         Type prestoType = mapColumnType(type);
-        String[] path = fullName.split("\\.");
+        String[] paths = fullName.split("\\.");
+        for (int i = 0; i < paths.length; ++i) {
+            paths[i] = escapeKqlSpecialCharsForColumnName(paths[i]);
+        }
         ClpNode current = root;
 
-        for (int i = 0; i < path.length - 1; i++) {
-            String segment = path[i];
+        for (int i = 0; i < paths.length - 1; i++) {
+            String segment = paths[i];
             ClpNode existingNode = current.children.get(segment);
 
             if (polymorphicTypeEnabled && existingNode != null && existingNode.type != null) {
@@ -116,7 +123,7 @@ public class ClpSchemaTree
             current.type = null;
         }
 
-        String leafName = path[path.length - 1];
+        String leafName = paths[paths.length - 1];
         String finalLeafName = resolvePolymorphicConflicts(current, leafName, prestoType);
 
         ClpNode leaf = new ClpNode(leafName, prestoType);

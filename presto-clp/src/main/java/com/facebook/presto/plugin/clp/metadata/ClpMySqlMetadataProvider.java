@@ -90,7 +90,8 @@ public class ClpMySqlMetadataProvider
                 PreparedStatement statement = connection.prepareStatement(query)) {
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
-                    schemaTree.addColumn(resultSet.getString(COLUMN_METADATA_TABLE_COLUMN_NAME),
+                    schemaTree.addColumn(
+                            resultSet.getString(COLUMN_METADATA_TABLE_COLUMN_NAME),
                             resultSet.getByte(COLUMN_METADATA_TABLE_COLUMN_TYPE));
                 }
             }

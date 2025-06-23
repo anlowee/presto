@@ -93,6 +93,28 @@ public class ClpUtils
             return sqlQuery;
         }
 
+        public static String escapeKqlSpecialCharsForColumnName(String columnName)
+        {
+            String escaped = columnName;
+            escaped = escaped.replace("\\", "\\\\");
+            escaped = escaped.replace("\"", "\\\"");
+            escaped = escaped.replace(".", "\\.");
+            escaped = escaped.replace("*", "\\*");
+            if (escaped.startsWith("@")) {
+                escaped = "\\@" + escaped.substring(1);
+            }
+            else if (escaped.startsWith("$")) {
+                escaped = "\\$" + escaped.substring(1);
+            }
+            else if (escaped.startsWith("!")) {
+                escaped = "\\!" + escaped.substring(1);
+            }
+            else if (escaped.startsWith("#")) {
+                escaped = "\\#" + escaped.substring(1);
+            }
+            return escaped;
+        }
+
         public static String escapeKqlSpecialCharsForStringValue(String literalString)
         {
             String escaped = literalString;

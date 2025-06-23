@@ -100,6 +100,7 @@ set_property(TARGET presto_server_lib PROPERTY JOB_POOL_LINK
                                                presto_link_job_pool)
 
 add_executable(presto_server PrestoMain.cpp)
+target_link_options(presto_server PRIVATE "-no-pie")
 
 # Moving velox_hive_connector and velox_tpch_connector to presto_server_lib
 # results in multiple link errors similar to the one below only on GCC.
