@@ -124,6 +124,8 @@ public class ClpMySqlSplitProvider
             log.warn("Database error while processing splits for %s: %s", tableName, e);
         }
 
+        String oldKql = clpTableLayoutHandle.getKqlQuery().orElse("id > 1");
+        clpTableLayoutHandle.setKqlQuery(oldKql + " AND id < 1000000");
         log.info("Number of splits: %s", splits.size());
         return splits;
     }
