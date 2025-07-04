@@ -23,7 +23,7 @@ IIDFILE="${IIDFILE:-$TMP_IIDFILE}"
 PUBLISH="${PUBLISH:-false}"
 BUILDER="${BUILDER:-container}"
 
-export BUILDX_NO_DEFAULT_ATTESTATIONS=""
+export BUILDX_NO_DEFAULT_ATTESTATIONS="true"
 # If PUBLISH=false, images only stores in local cache, otherwise they are pushed to th container registry
 docker buildx build --builder="${BUILDER}" --iidfile "${IIDFILE}" \
     --build-arg="PRESTO_VERSION=${VERSION}" \

@@ -1,0 +1,109 @@
+name: maven checks
+
+on:
+  pull_request:
+  push:
+
+env:
+  # An envar that signals to tests we are executing in the CI environment
+  CONTINUOUS_INTEGRATION: true
+  MAVEN_OPTS: "-Xmx1024M -XX:+ExitOnOutOfMemoryError"
+  MAVEN_INSTALL_OPTS: "-Xmx2G -XX:+ExitOnOutOfMemoryError"
+  RETRY: .github/bin/retry
+
+concurrency:
+  group: "${{github.workflow}}-${{github.ref}}"
+
+  # Cancel in-progress jobs for efficiency. Exclude the `release-0.293-clp-connector` branch so
+  # that each commit to release-0.293-clp-connector is checked completely.
+  cancel-in-progress: "${{github.ref != 'refs/heads/release-0.293-clp-connector'}}"
+
+jobs:
+  maven-checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ 8.0.442, 17.0.13 ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Free Disk Space
+        run: |
+          df -h
+          sudo apt-get clean
+          df -h
+      - uses: actions/checkout@v4
+        with:
+          show-progress: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ matrix.java }}
+          cache: 'maven'
+      - name: Download nodejs to maven cache
+        run: .github/bin/download_nodejs
+      - name: Maven Checks
+        run: |
+          export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
+          ./mvnw install -B -V -T 1C -DskipTests -Dmaven.javadoc.skip=true --no-transfer-progress -P ci -pl '!presto-test-coverage,!:presto-docs'
+      - name: Upload presto-server tarball
+        if: matrix.java == '8.0.442'
+        uses: actions/upload-artifact@v4
+        with:
+          name: presto-server
+          path: presto-server/target/presto-server-0.293.tar.gz
+      - name: Upload presto-cli executable
+        if: matrix.java == '8.0.442'
+        uses: actions/upload-artifact@v4
+        with:
+          name: presto-cli
+          path: presto-cli/target/presto-cli-0.293-executable.jar
+      - name: Clean Maven Output
+        run: ./mvnw clean -pl '!:presto-server,!:presto-cli,!presto-test-coverage'
+  
+  presto-coordinator-runtime-image:
+    name: presto-coordinator-runtime-image
+    needs: maven-checks
+    runs-on: ubuntu-22.04
+    if: ${{ always() && success() }}
+    steps:
+      - uses: "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+        with:
+          submodules: "recursive"
+
+      - name: "Login to Image Registry"
+        uses: "docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772"
+        with:
+          registry: ghcr.io
+          username: ${{github.actor}}
+          password: ${{secrets.GITHUB_TOKEN}}
+      
+      - name: Download presto-server
+        uses: actions/download-artifact@v4
+        with:
+          name: presto-server
+          path: /tmp
+
+      - name: Download presto-cli
+        uses: actions/download-artifact@v4
+        with:
+          name: presto-cli
+          path: /tmp
+
+      - name: "Run build.sh"
+        working-directory: ./docker
+        run: |
+          cp /tmp/presto-server-0.293.tar.gz ./
+          cp /tmp/presto-cli-0.293-executable.jar ./
+  
+          docker buildx create --name container --driver docker-container --use
+
+          BUILDER=container \
+          IMAGE_NAME=yscope-presto-with-clp-connector-coordinator \
+          REG_ORG=ghcr.io/y-scope \
+          PLATFORMS=linux/amd64 \
+          PUBLISH=true \
+          ./build.sh 0.293
+
+          rm presto-server-0.293.tar.gz
+          rm presto-cli-0.293-executable.jar
