@@ -1596,14 +1596,9 @@ ClpPrestoToVeloxConnector::toVeloxTableHandle(
       clpLayout,
       "Unexpected layout type {}",
       tableHandle.connectorTableLayout->_type);
-  auto storageType =
-      (clpLayout->table.storageType == protocol::clp::StorageType::S3)
-      ? connector::clp::ClpTableHandle::StorageType::kS3
-      : connector::clp::ClpTableHandle::StorageType::kFS;
   return std::make_unique<connector::clp::ClpTableHandle>(
       tableHandle.connectorId,
       clpLayout->table.schemaTableName.table,
-      storageType,
       clpLayout->kqlQuery);
 }
 
