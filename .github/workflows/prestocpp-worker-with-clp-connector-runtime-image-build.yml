@@ -1,0 +1,40 @@
+name: prestocpp-worker-with-clp-connector-runtime-image-build
+
+on:
+  # TODO: specifiy the branch to the release-0.293 when finalize the PR
+  pull_request:
+  push:
+
+jobs:
+  prestocpp-worker-with-clp-connector-runtime-image:
+    name: prestocpp-worker-with-clp-connector-runtime-image
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+        with:
+          submodules: "recursive"
+
+      - name: "Login to Image Registry"
+        uses: "docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772"
+        with:
+          registry: ghcr.io
+          username: ${{github.actor}}
+          password: ${{secrets.GITHUB_TOKEN}}
+      
+      - name: "Build worker image"
+        working-directory: ./presto-native-execution
+        run: |
+          sed -i 's|image: presto/prestissimo-runtime:ubuntu-22.04|image: ghcr.io/${{github.actor}}/presto/prestissimo-with-clp-connector-runtime:ubuntu-22.04|' docker-compose.yml
+          docker compose build ubuntu-native-dependency
+          docker compose build ubuntu-native-runtime
+  
+          if [ "${{ github.event_name }}" = "push" ] && \
+             [ "${{ github.repository }}" = "y-scope/presto" ] && \
+             [ "${{ github.ref }}" = "refs/heads/release-0.293-clp-connector" ]; then
+            docker push "ghcr.io/${{github.actor}}/presto/prestissimo-with-clp-connector-runtime:ubuntu-22.04"
+          else
+            echo "github.event_name = ${{ github.event_name }}"
+            echo "github.repository = ${{ github.repository }}"
+            echo "github.ref = ${{ github.ref }}"
+            echo "Skip publish the image"
+          fi

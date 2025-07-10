@@ -2,6 +2,7 @@ name: maven checks
 
 on:
   pull_request:
+  push:
 
 env:
   # An envar that signals to tests we are executing in the CI environment
@@ -9,6 +10,13 @@ env:
   MAVEN_OPTS: "-Xmx1024M -XX:+ExitOnOutOfMemoryError"
   MAVEN_INSTALL_OPTS: "-Xmx2G -XX:+ExitOnOutOfMemoryError"
   RETRY: .github/bin/retry
+
+concurrency:
+  group: "${{github.workflow}}-${{github.ref}}"
+
+  # Cancel in-progress jobs for efficiency. Exclude the `release-0.293-clp-connector` branch so
+  # that each commit to release-0.293-clp-connector is checked completely.
+  cancel-in-progress: "${{github.ref != 'refs/heads/release-0.293-clp-connector'}}"
 
 jobs:
   maven-checks:
@@ -18,9 +26,6 @@ jobs:
         java: [ 8.0.442, 17.0.13 ]
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    concurrency:
-      group: ${{ github.workflow }}-maven-checks-${{ github.event.pull_request.number }}-${{ matrix.java }}
-      cancel-in-progress: true
     steps:
       - name: Free Disk Space
         run: |
@@ -41,5 +46,72 @@ jobs:
         run: |
           export MAVEN_OPTS="${MAVEN_INSTALL_OPTS}"
           ./mvnw install -B -V -T 1C -DskipTests -Dmaven.javadoc.skip=true --no-transfer-progress -P ci -pl '!presto-test-coverage,!:presto-docs'
+      - name: Upload presto-server tarball
+        if: matrix.java == '8.0.442'
+        uses: actions/upload-artifact@v4
+        with:
+          name: presto-server
+          path: presto-server/target/presto-server-0.293.tar.gz
+      - name: Upload presto-cli executable
+        if: matrix.java == '8.0.442'
+        uses: actions/upload-artifact@v4
+        with:
+          name: presto-cli
+          path: presto-cli/target/presto-cli-0.293-executable.jar
       - name: Clean Maven Output
         run: ./mvnw clean -pl '!:presto-server,!:presto-cli,!presto-test-coverage'
+  
+  presto-coordinator-with-clp-connector-runtime-image:
+    name: presto-coordinator-runtime-image
+    needs: maven-checks
+    runs-on: ubuntu-22.04
+    if: ${{ always() && success() }}
+    steps:
+      - uses: "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+        with:
+          submodules: "recursive"
+
+      - name: "Login to Image Registry"
+        uses: "docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772"
+        with:
+          registry: ghcr.io
+          username: ${{github.actor}}
+          password: ${{secrets.GITHUB_TOKEN}}
+      
+      - name: Download presto-server
+        uses: actions/download-artifact@v4
+        with:
+          name: presto-server
+          path: /tmp
+
+      - name: Download presto-cli
+        uses: actions/download-artifact@v4
+        with:
+          name: presto-cli
+          path: /tmp
+
+      - name: "Run build.sh"
+        working-directory: ./docker
+        run: |
+          mv /tmp/presto-server-0.293.tar.gz ./
+          mv /tmp/presto-cli-0.293-executable.jar ./
+  
+          if [ "${{ github.event_name }}" = "push" ] && \
+             [ "${{ github.repository }}" = "y-scope/presto" ] && \
+             [ "${{ github.ref }}" = "refs/heads/release-0.293-clp-connector" ]; then
+            export PUBLISH=true
+          else
+            echo "github.event_name = ${{ github.event_name }}"
+            echo "github.repository = ${{ github.repository }}"
+            echo "github.ref = ${{ github.ref }}"
+            echo "Skip publish the image"
+            export PUBLISH=false
+          fi
+
+          IMAGE_NAME=coordinator-with-clp-connector-runtime \
+          REG_ORG=ghcr.io/${{github.actor}}/presto \
+          PUBLISH=$PUBLISH \
+          ./build.sh 0.293
+
+          rm presto-server-0.293.tar.gz
+          rm presto-cli-0.293-executable.jar
