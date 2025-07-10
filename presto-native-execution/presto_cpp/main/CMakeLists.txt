@@ -110,6 +110,7 @@ set_property(TARGET presto_server_lib PROPERTY JOB_POOL_LINK
                                                presto_link_job_pool)
 
 add_executable(presto_server PrestoMain.cpp)
+target_link_options(presto_server PRIVATE "-no-pie")
 
 # velox_tpch_connector is an OBJECT target in Velox and so needs to be linked
 # to the executable or use TARGET_OBJECT linkage for the presto_server_lib target.
