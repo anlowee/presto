@@ -31,7 +31,9 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SCRIPT_CXX_FLAGS}")
 
 # Known warnings that are benign can be disabled.
 set(DISABLED_WARNINGS
-    "-Wno-nullability-completeness -Wno-deprecated-declarations")
+    "-Wno-nullability-completeness \
+     -Wno-deprecated-declarations \
+     -Wno-restrict")
 
 # Important warnings that must be explicitly enabled.
 set(ENABLE_WARNINGS "-Wreorder")
