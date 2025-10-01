@@ -23,6 +23,7 @@ import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.plugin.clp.optimization.ClpComputePushDown;
 import com.facebook.presto.plugin.clp.optimization.ClpTopNSpec;
+import com.facebook.presto.plugin.clp.optimization.ClpTopNSpec.Order;
 import com.facebook.presto.plugin.clp.split.ClpSplitProvider;
 import com.facebook.presto.plugin.clp.split.filter.ClpMySqlSplitFilterProvider;
 import com.facebook.presto.plugin.clp.split.filter.ClpSplitFilterProvider;
@@ -55,7 +56,6 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Paths;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -71,6 +71,7 @@ import static com.facebook.presto.plugin.clp.ClpMetadataDbSetUp.METADATA_DB_USER
 import static com.facebook.presto.plugin.clp.ClpMetadataDbSetUp.getDbHandle;
 import static com.facebook.presto.plugin.clp.ClpMetadataDbSetUp.setupMetadata;
 import static com.facebook.presto.plugin.clp.ClpMetadataDbSetUp.setupSplit;
+import static com.facebook.presto.plugin.clp.ClpSplit.SplitType.ARCHIVE;
 import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.Boolean;
 import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.ClpString;
 import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.Float;
@@ -130,9 +131,10 @@ public class TestClpTopN
                         tableName,
                         ImmutableList.of(
                                 new ClpMetadataDbSetUp.ArchivesTableRow("0", 100, 0, 100),
-                                new ClpMetadataDbSetUp.ArchivesTableRow("1", 120, 50, 150),
-                                new ClpMetadataDbSetUp.ArchivesTableRow("2", 110, 100, 200),
-                                new ClpMetadataDbSetUp.ArchivesTableRow("3", 100, 201, 300))));
+                                new ClpMetadataDbSetUp.ArchivesTableRow("1", 100, 50, 150),
+                                new ClpMetadataDbSetUp.ArchivesTableRow("2", 100, 100, 200),
+                                new ClpMetadataDbSetUp.ArchivesTableRow("3", 100, 201, 300),
+                                new ClpMetadataDbSetUp.ArchivesTableRow("4", 100, 301, 400))));
 
         URL resource = getClass().getClassLoader().getResource("test-topn-split-filter.json");
         if (resource == null) {
@@ -173,24 +175,83 @@ public class TestClpTopN
     @Test
     public void test()
     {
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp > 120 AND timestamp < 240 ORDER BY timestamp DESC LIMIT 100",
+                "(timestamp > 120 AND timestamp < 240)",
+                "(end_timestamp > 120 AND begin_timestamp < 240)",
+                100,
+                Order.DESC,
+                ImmutableSet.of("1", "2", "3"));
+
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp > 120 AND timestamp < 240 ORDER BY timestamp ASC LIMIT 50",
+                "(timestamp > 120 AND timestamp < 240)",
+                "(end_timestamp > 120 AND begin_timestamp < 240)",
+                50,
+                Order.ASC,
+                ImmutableSet.of("1", "2", "3"));
+
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp >= 180 AND timestamp <= 260 ORDER BY timestamp DESC LIMIT 100",
+                "timestamp >= 180 AND timestamp <= 260",
+                "end_timestamp >= 180 AND begin_timestamp <= 260",
+                100,
+                Order.DESC,
+                ImmutableSet.of("2", "3"));
+
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp > 250 AND timestamp < 290 ORDER BY timestamp DESC LIMIT 10",
+                "(timestamp > 250 AND timestamp < 290)",
+                "(end_timestamp > 250 AND begin_timestamp < 290)",
+                10,
+                Order.DESC,
+                ImmutableSet.of("3"));
+
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp > 1000 AND timestamp < 1100 ORDER BY timestamp DESC LIMIT 10",
+                "(timestamp > 1000 AND timestamp < 1100)",
+                "(end_timestamp > 1000 AND begin_timestamp < 1100)",
+                10,
+                Order.DESC,
+                ImmutableSet.of());
+
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp <= 300 ORDER BY timestamp DESC LIMIT 1000",
+                "timestamp <= 300",
+                "begin_timestamp <= 300",
+                1000,
+                Order.DESC,
+                ImmutableSet.of("0", "1", "2", "3"));
+
+        testTopNQueryPlanAndSplits(
+                "SELECT * FROM test WHERE timestamp <= 400 ORDER BY timestamp DESC LIMIT 100",
+                "timestamp <= 400",
+                "begin_timestamp <= 400",
+                100,
+                Order.DESC,
+                ImmutableSet.of("3", "4"));
+    }
+
+    private void testTopNQueryPlanAndSplits(String sql, String kql, String metadataSql, long limit, Order order, Set<String> splitIds)
+    {
         TransactionId transactionId = localQueryRunner.getTransactionManager().beginTransaction(false);
         Session session = testSessionBuilder().setCatalog("clp").setSchema("default").setTransactionId(transactionId).build();
 
         Plan plan = localQueryRunner.createPlan(
                 session,
-                "SELECT * FROM test WHERE timestamp > 120 AND timestamp < 240 ORDER by timestamp DESC LIMIT 100",
+                sql,
                 WarningCollector.NOOP);
         ClpComputePushDown optimizer = new ClpComputePushDown(functionAndTypeManager, functionResolution, splitFilterProvider);
         PlanNode optimizedPlan = optimizer.optimize(plan.getRoot(), session.toConnectorSession(), variableAllocator, planNodeIdAllocator);
 
         ClpTableLayoutHandle clpTableLayoutHandle = new ClpTableLayoutHandle(
                 table,
-                Optional.of("(timestamp > 120 AND timestamp < 240)"),
-                Optional.of("(end_timestamp > 120 AND begin_timestamp < 240)"),
+                Optional.of(kql),
+                Optional.of(metadataSql),
                 true,
                 Optional.of(new ClpTopNSpec(
-                        100,
-                        ImmutableList.of(new ClpTopNSpec.Ordering(ImmutableList.of("begin_timestamp", "end_timestamp"), ClpTopNSpec.Order.DESC)))));
+                        limit,
+                        ImmutableList.of(new ClpTopNSpec.Ordering(ImmutableList.of("begin_timestamp", "end_timestamp"), order)))));
 
         PlanAssert.assertPlan(
                 session,
@@ -206,8 +267,11 @@ public class TestClpTopN
                                         isHoliday,
                                         new ClpColumnHandle("timestamp", BIGINT)))));
 
-        List<ClpSplit> splits = splitProvider.listSplits(clpTableLayoutHandle);
-        assertEquals(splits, ImmutableList.of());
+        assertEquals(
+                ImmutableSet.copyOf(splitProvider.listSplits(clpTableLayoutHandle)),
+                splitIds.stream()
+                        .map(id -> new ClpSplit("/tmp/archives/test/" + id, ARCHIVE, Optional.of(kql)))
+                        .collect(ImmutableSet.toImmutableSet()));
     }
 
     private static final class ClpTableScanMatcher

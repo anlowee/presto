@@ -63,8 +63,7 @@ public class ClpTopNSpec
                 return false;
             }
             Ordering other = (Ordering) obj;
-            return this.order == other.order && this.columns.equals(other.columns
-            );
+            return this.order == other.order && this.columns.equals(other.columns);
         }
 
         @Override

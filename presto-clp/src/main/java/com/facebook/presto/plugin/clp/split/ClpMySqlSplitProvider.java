@@ -19,7 +19,6 @@ import com.facebook.presto.plugin.clp.ClpSplit;
 import com.facebook.presto.plugin.clp.ClpTableHandle;
 import com.facebook.presto.plugin.clp.ClpTableLayoutHandle;
 import com.facebook.presto.plugin.clp.optimization.ClpTopNSpec;
-import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.google.common.collect.ImmutableList;
 
 import javax.inject.Inject;
@@ -30,7 +29,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -140,19 +138,18 @@ public class ClpMySqlSplitProvider
      * @param ordering The top-N ordering specifying which columns contain lowerBound/upperBound
      * @return List of ArchiveMeta objects representing archive metadata
      */
-    private List<ArchiveMeta> fetchArchiveMeta(String query, ClpTopNSpec.Ordering ordering) {
+    private List<ArchiveMeta> fetchArchiveMeta(String query, ClpTopNSpec.Ordering ordering)
+    {
         List<ArchiveMeta> list = new ArrayList<>();
         try (Connection connection = getConnection();
                 PreparedStatement stmt = connection.prepareStatement(query);
                 ResultSet rs = stmt.executeQuery()) {
-
             while (rs.next()) {
                 list.add(new ArchiveMeta(
                         rs.getString(ARCHIVES_TABLE_COLUMN_ID),
                         rs.getLong(ordering.columns.get(0)),
                         rs.getLong(ordering.columns.get(1)),
-                        rs.getLong(ARCHIVES_TABLE_NUM_MESSAGES)
-                ));
+                        rs.getLong(ARCHIVES_TABLE_NUM_MESSAGES)));
             }
         }
         catch (SQLException e) {
@@ -176,7 +173,8 @@ public class ClpMySqlSplitProvider
      * @param order ASC (earliest first) or DESC (latest first)
      * @return archives that must be scanned
      */
-    private static List<ArchiveMeta> selectTopNArchives(List<ArchiveMeta> archives, long limit, ClpTopNSpec.Order order) {
+    private static List<ArchiveMeta> selectTopNArchives(List<ArchiveMeta> archives, long limit, ClpTopNSpec.Order order)
+    {
         if (archives == null || archives.isEmpty() || limit <= 0) {
             return ImmutableList.of();
         }
@@ -199,7 +197,8 @@ public class ClpMySqlSplitProvider
                 selected.addAll(groups.get(i).members);
                 coveredByOlder += groups.get(i).count;
             }
-        } else {
+        }
+        else {
             // oldest group index
             int k = 0;
 
@@ -223,7 +222,8 @@ public class ClpMySqlSplitProvider
      * @param archives archives sorted by lowerBound
      * @return merged components
      */
-    private static List<ArchiveGroup> toArchiveGroups(List<ArchiveMeta> archives) {
+    private static List<ArchiveGroup> toArchiveGroups(List<ArchiveMeta> archives)
+    {
         List<ArchiveMeta> sorted = new ArrayList<>(archives);
         sorted.sort(comparingLong((ArchiveMeta a) -> a.lowerBound)
                 .thenComparingLong(a -> a.upperBound));
@@ -253,7 +253,8 @@ public class ClpMySqlSplitProvider
         return groups;
     }
 
-    private static ArchiveGroup startArchiveGroup(ArchiveMeta a) {
+    private static ArchiveGroup startArchiveGroup(ArchiveMeta a)
+    {
         ArchiveGroup group = new ArchiveGroup();
         group.begin = a.lowerBound;
         group.end = a.upperBound;
@@ -262,7 +263,8 @@ public class ClpMySqlSplitProvider
         return group;
     }
 
-    private static boolean overlaps(ArchiveGroup cur, ArchiveMeta a) {
+    private static boolean overlaps(ArchiveGroup cur, ArchiveMeta a)
+    {
         return a.lowerBound <= cur.end && a.upperBound >= cur.begin;
     }
 
@@ -288,7 +290,8 @@ public class ClpMySqlSplitProvider
     /**
      * Represents a group of overlapping archives treated as one logical unit.
      */
-    private static final class ArchiveGroup {
+    private static final class ArchiveGroup
+    {
         long begin;
         long end;
         long count;
