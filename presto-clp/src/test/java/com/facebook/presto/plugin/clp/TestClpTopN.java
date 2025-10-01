@@ -77,6 +77,8 @@ import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.ClpS
 import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.Float;
 import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.Integer;
 import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.VarString;
+import static com.facebook.presto.plugin.clp.optimization.ClpTopNSpec.Order.ASC;
+import static com.facebook.presto.plugin.clp.optimization.ClpTopNSpec.Order.DESC;
 import static com.facebook.presto.sql.planner.assertions.MatchResult.NO_MATCH;
 import static com.facebook.presto.sql.planner.assertions.MatchResult.match;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anyTree;
@@ -180,7 +182,7 @@ public class TestClpTopN
                 "(timestamp > 120 AND timestamp < 240)",
                 "(end_timestamp > 120 AND begin_timestamp < 240)",
                 100,
-                Order.DESC,
+                DESC,
                 ImmutableSet.of("1", "2", "3"));
 
         testTopNQueryPlanAndSplits(
@@ -188,7 +190,7 @@ public class TestClpTopN
                 "(timestamp > 120 AND timestamp < 240)",
                 "(end_timestamp > 120 AND begin_timestamp < 240)",
                 50,
-                Order.ASC,
+                ASC,
                 ImmutableSet.of("1", "2", "3"));
 
         testTopNQueryPlanAndSplits(
@@ -196,7 +198,7 @@ public class TestClpTopN
                 "timestamp >= 180 AND timestamp <= 260",
                 "end_timestamp >= 180 AND begin_timestamp <= 260",
                 100,
-                Order.DESC,
+                DESC,
                 ImmutableSet.of("2", "3"));
 
         testTopNQueryPlanAndSplits(
@@ -204,7 +206,7 @@ public class TestClpTopN
                 "(timestamp > 250 AND timestamp < 290)",
                 "(end_timestamp > 250 AND begin_timestamp < 290)",
                 10,
-                Order.DESC,
+                DESC,
                 ImmutableSet.of("3"));
 
         testTopNQueryPlanAndSplits(
@@ -212,7 +214,7 @@ public class TestClpTopN
                 "(timestamp > 1000 AND timestamp < 1100)",
                 "(end_timestamp > 1000 AND begin_timestamp < 1100)",
                 10,
-                Order.DESC,
+                DESC,
                 ImmutableSet.of());
 
         testTopNQueryPlanAndSplits(
@@ -220,7 +222,7 @@ public class TestClpTopN
                 "timestamp <= 300",
                 "begin_timestamp <= 300",
                 1000,
-                Order.DESC,
+                DESC,
                 ImmutableSet.of("0", "1", "2", "3"));
 
         testTopNQueryPlanAndSplits(
@@ -228,7 +230,7 @@ public class TestClpTopN
                 "timestamp <= 400",
                 "begin_timestamp <= 400",
                 100,
-                Order.DESC,
+                DESC,
                 ImmutableSet.of("3", "4"));
     }
 
