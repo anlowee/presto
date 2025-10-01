@@ -16,7 +16,6 @@ package com.facebook.presto.plugin.clp;
 import com.facebook.airlift.log.Logger;
 import com.facebook.presto.Session;
 import com.facebook.presto.common.transaction.TransactionId;
-import com.facebook.presto.common.type.ArrayType;
 import com.facebook.presto.cost.PlanNodeStatsEstimate;
 import com.facebook.presto.cost.StatsAndCosts;
 import com.facebook.presto.cost.StatsProvider;
@@ -24,8 +23,6 @@ import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.plugin.clp.optimization.ClpComputePushDown;
 import com.facebook.presto.plugin.clp.optimization.ClpTopNSpec;
-import com.facebook.presto.plugin.clp.optimization.ClpUdfRewriter;
-import com.facebook.presto.plugin.clp.split.ClpMySqlSplitProvider;
 import com.facebook.presto.plugin.clp.split.ClpSplitProvider;
 import com.facebook.presto.plugin.clp.split.filter.ClpMySqlSplitFilterProvider;
 import com.facebook.presto.plugin.clp.split.filter.ClpSplitFilterProvider;
@@ -65,8 +62,6 @@ import java.util.Set;
 
 import static com.facebook.presto.common.Utils.checkState;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
-import static com.facebook.presto.common.type.DoubleType.DOUBLE;
-import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
 import static com.facebook.presto.plugin.clp.ClpMetadataDbSetUp.ARCHIVES_STORAGE_DIRECTORY_BASE;
 import static com.facebook.presto.plugin.clp.ClpMetadataDbSetUp.METADATA_DB_PASSWORD;
@@ -84,11 +79,10 @@ import static com.facebook.presto.plugin.clp.metadata.ClpSchemaTreeNodeType.VarS
 import static com.facebook.presto.sql.planner.assertions.MatchResult.NO_MATCH;
 import static com.facebook.presto.sql.planner.assertions.MatchResult.match;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anyTree;
-import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.filter;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.node;
-import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.project;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
+import static org.testng.Assert.assertEquals;
 
 @Test(singleThreaded = true)
 public class TestClpTopN
@@ -213,6 +207,7 @@ public class TestClpTopN
                                         new ClpColumnHandle("timestamp", BIGINT)))));
 
         List<ClpSplit> splits = splitProvider.listSplits(clpTableLayoutHandle);
+        assertEquals(splits, ImmutableList.of());
     }
 
     private static final class ClpTableScanMatcher

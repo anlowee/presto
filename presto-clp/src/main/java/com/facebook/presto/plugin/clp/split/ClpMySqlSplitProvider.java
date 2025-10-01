@@ -36,6 +36,7 @@ import java.util.Optional;
 
 import static com.facebook.presto.plugin.clp.ClpSplit.SplitType.ARCHIVE;
 import static java.lang.String.format;
+import static java.util.Comparator.comparingLong;
 
 public class ClpMySqlSplitProvider
         implements ClpSplitProvider
@@ -161,53 +162,108 @@ public class ClpMySqlSplitProvider
     }
 
     /**
-     * Selects archives to satisfy top-N messages in a safe way, considering overlapping timestamp
-     * ranges.
-     *
-     * @param archives List of ArchiveMeta objects, already filtered by SQL
-     * @param limit    Number of messages to fetch (top-N)
-     * @param order    Ordering direction (ASC or DESC) for top-N selection
-     * @return List of {@link ArchiveMeta} objects that must be scanned to safely fetch top-N
-     * messages
-     */
-    private List<ArchiveMeta> selectTopNArchives(List<ArchiveMeta> archives, long limit, ClpTopNSpec.Order order) {
-        List<ArchiveMeta> selected = new ArrayList<>();
-        long accumulated = 0;
+     * Selects the set of archives that must be scanned to guarantee the top-N results by timestamp
+     * (ASC or DESC), given only archive ranges and message counts.
+     * <ul>
+     *   <li>Merges overlapping archives into components (union of time ranges).</li>
+     *   <li>For DESC: always include the newest component, then add older ones until their total
+     *      message counts cover the limit.</li>
+     *   <li>For ASC: symmetric — start from the oldest, then add newer ones.</li>
+     * </ul>
 
-        if (order == ClpTopNSpec.Order.ASC) {
-            archives.sort(Comparator.comparingLong(a -> a.lowerBound));
-            for (ArchiveMeta a : archives) {
-                if (accumulated < limit) {
-                    selected.add(a);
-                    accumulated += a.messageCount;
-                } else {
-                    long maxUpper = selected.stream().mapToLong(m -> m.upperBound).max().orElse(Long.MIN_VALUE);
-                    if (a.lowerBound <= maxUpper) {
-                        selected.add(a);
-                        accumulated += a.messageCount;
-                    } else {
-                        break;
-                    }
-                }
+     * @param archives list of archives with [lowerBound, upperBound, messageCount]
+     * @param limit number of messages requested
+     * @param order ASC (earliest first) or DESC (latest first)
+     * @return archives that must be scanned
+     */
+    private static List<ArchiveMeta> selectTopNArchives(List<ArchiveMeta> archives, long limit, ClpTopNSpec.Order order) {
+        if (archives == null || archives.isEmpty() || limit <= 0) {
+            return ImmutableList.of();
+        }
+
+        // 1) Merge overlaps into groups
+        List<ArchiveGroup> groups = toArchiveGroups(archives);
+
+        // 2) Pick minimal set of groups per order, then return all member archives
+        List<ArchiveMeta> selected = new ArrayList<>();
+        if (order == ClpTopNSpec.Order.DESC) {
+            // newest group index
+            int k = groups.size() - 1;
+
+            // must include newest group
+            selected.addAll(groups.get(k).members);
+
+            // assume worst case: newest contributes 0 after filter; cover limit from older groups
+            long coveredByOlder = 0;
+            for (int i = k - 1; i >= 0 && coveredByOlder < limit; --i) {
+                selected.addAll(groups.get(i).members);
+                coveredByOlder += groups.get(i).count;
+            }
+        } else {
+            // oldest group index
+            int k = 0;
+
+            // must include oldest group
+            selected.addAll(groups.get(k).members);
+
+            // assume worst case: oldest contributes 0; cover limit from newer groups
+            long coveredByNewer = 0;
+            for (int i = k + 1; i < groups.size() && coveredByNewer < limit; ++i) {
+                selected.addAll(groups.get(i).members);
+                coveredByNewer += groups.get(i).count;
             }
         }
-        else { // DESC
-            for (ArchiveMeta a : archives) {
-                if (accumulated < limit) {
-                    selected.add(a);
-                    accumulated += a.messageCount;
-                } else {
-                    long minLower = selected.stream().mapToLong(m -> m.lowerBound).min().orElse(Long.MAX_VALUE);
-                    if (a.upperBound >= minLower) {
-                        selected.add(a);
-                        accumulated += a.messageCount;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
+
         return selected;
+    }
+
+    /**
+     * Groups overlapping archives into non-overlapping archive groups.
+     *
+     * @param archives archives sorted by lowerBound
+     * @return merged components
+     */
+    private static List<ArchiveGroup> toArchiveGroups(List<ArchiveMeta> archives) {
+        List<ArchiveMeta> sorted = new ArrayList<>(archives);
+        sorted.sort(comparingLong((ArchiveMeta a) -> a.lowerBound)
+                .thenComparingLong(a -> a.upperBound));
+
+        List<ArchiveGroup> groups = new ArrayList<>();
+        ArchiveGroup cur = null;
+
+        for (ArchiveMeta a : sorted) {
+            if (cur == null) {
+                cur = startArchiveGroup(a);
+            }
+            else if (overlaps(cur, a)) {
+                // extend current component
+                cur.end = Math.max(cur.end, a.upperBound);
+                cur.count += a.messageCount;
+                cur.members.add(a);
+            }
+            else {
+                // finalize current, start a new one
+                groups.add(cur);
+                cur = startArchiveGroup(a);
+            }
+        }
+        if (cur != null) {
+            groups.add(cur);
+        }
+        return groups;
+    }
+
+    private static ArchiveGroup startArchiveGroup(ArchiveMeta a) {
+        ArchiveGroup group = new ArchiveGroup();
+        group.begin = a.lowerBound;
+        group.end = a.upperBound;
+        group.count = a.messageCount;
+        group.members.add(a);
+        return group;
+    }
+
+    private static boolean overlaps(ArchiveGroup cur, ArchiveMeta a) {
+        return a.lowerBound <= cur.end && a.upperBound >= cur.begin;
     }
 
     /**
@@ -227,5 +283,15 @@ public class ClpMySqlSplitProvider
             this.upperBound = upperBound;
             this.messageCount = messageCount;
         }
+    }
+
+    /**
+     * Represents a group of overlapping archives treated as one logical unit.
+     */
+    private static final class ArchiveGroup {
+        long begin;
+        long end;
+        long count;
+        final List<ArchiveMeta> members = new ArrayList<>();
     }
 }
