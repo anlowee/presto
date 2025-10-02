@@ -14,7 +14,9 @@
 package com.facebook.presto.plugin.clp.optimization;
 
 import com.facebook.airlift.log.Logger;
-import com.facebook.presto.plugin.clp.ClpExpression;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.plugin.clp.ClpColumnHandle;
+import com.facebook.presto.plugin.clp.ClpMetadata;
 import com.facebook.presto.plugin.clp.ClpTableHandle;
 import com.facebook.presto.plugin.clp.ClpTableLayoutHandle;
 import com.facebook.presto.plugin.clp.split.filter.ClpSplitFilterProvider;
@@ -22,20 +24,28 @@ import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPlanOptimizer;
 import com.facebook.presto.spi.ConnectorPlanRewriter;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.VariableAllocator;
 import com.facebook.presto.spi.function.FunctionMetadataManager;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
 import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.Ordering;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
+import com.facebook.presto.spi.plan.ProjectNode;
 import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -67,7 +77,7 @@ public class ClpComputePushDown
 
         // Throw exception if any required split filters are missing
         if (!rewriter.tableScopeSet.isEmpty() && !rewriter.hasVisitedFilter) {
-            splitFilterProvider.checkContainsRequiredFilters(rewriter.tableScopeSet, "");
+            splitFilterProvider.checkContainsRequiredFilters(rewriter.tableScopeSet, ImmutableSet.of());
         }
         return optimizedPlanNode;
     }
@@ -105,6 +115,164 @@ public class ClpComputePushDown
             return processFilter(node, (TableScanNode) node.getSource());
         }
 
+        @Override
+        public PlanNode visitTopN(TopNNode node, RewriteContext<Void> context)
+        {
+            PlanNode rewrittenSource = context.rewrite(node.getSource(), null);
+
+            ProjectNode project = null;
+            FilterNode filter = null;
+            PlanNode cursor = rewrittenSource;
+
+            if (cursor instanceof ProjectNode) {
+                project = (ProjectNode) cursor;
+                cursor = project.getSource();
+            }
+            if (cursor instanceof FilterNode) {
+                filter = (FilterNode) cursor;
+                cursor = filter.getSource();
+            }
+            if (!(cursor instanceof TableScanNode)) {
+                return node.replaceChildren(ImmutableList.of(rewrittenSource));
+            }
+
+            TableScanNode scan = (TableScanNode) cursor;
+            TableHandle tableHandle = scan.getTable();
+            if (!(tableHandle.getConnectorHandle() instanceof ClpTableHandle)) {
+                return node.replaceChildren(ImmutableList.of(rewrittenSource));
+            }
+
+            // only allow TopN pushdown when metadata-only is true
+            boolean metadataOnly = false;
+            Optional<ConnectorTableLayoutHandle> layout = tableHandle.getLayout();
+            Optional<String> kql = Optional.empty();
+            Optional<String> metadataSql = Optional.empty();
+            Optional<ClpTopNSpec> existingTopN = Optional.empty();
+            ClpTableHandle clpTableHandle = null;
+
+            if (layout.isPresent() && layout.get() instanceof ClpTableLayoutHandle) {
+                ClpTableLayoutHandle cl = (ClpTableLayoutHandle) layout.get();
+                metadataOnly = cl.isMetadataQueryOnly();
+                kql = cl.getKqlQuery();
+                metadataSql = cl.getMetadataSql();
+                existingTopN = cl.getTopN();
+                clpTableHandle = cl.getTable();
+            }
+
+            if (!metadataOnly) {
+                // Rule: skip TopN pushdown unless metadataQueryOnly is true
+                return node.replaceChildren(ImmutableList.of(rewrittenSource));
+            }
+
+            // Ensure ORDER BY items are plain variables (allow identity through Project)
+            List<Ordering> ords = node.getOrderingScheme().getOrderBy();
+            if (project != null && !areIdents(project, ords)) {
+                return node.replaceChildren(ImmutableList.of(rewrittenSource));
+            }
+
+            Map<VariableReferenceExpression, ColumnHandle> assignments = scan.getAssignments();
+            List<ClpTopNSpec.Ordering> newOrderings = new ArrayList<>(ords.size());
+            for (Ordering ord : ords) {
+                VariableReferenceExpression outVar = ord.getVariable();
+                VariableReferenceExpression scanVar =
+                        (project == null)
+                                ? outVar
+                                : resolveThroughProject(project, outVar).orElse(null);
+                if (scanVar == null) {
+                    // Missing or non-identity mapping → skip pushdown
+                    return node.replaceChildren(ImmutableList.of(rewrittenSource));
+                }
+                ClpColumnHandle columnHandle = ((ClpColumnHandle) assignments.get(scanVar));
+                if (columnHandle == null) {
+                    // ORDER BY is not a base scan column → skip pushdown
+                    return node.replaceChildren(ImmutableList.of(rewrittenSource));
+                }
+                String tableScope = CONNECTOR_NAME + "." + (clpTableHandle != null ?
+                        clpTableHandle.getSchemaTableName().toString() : ClpMetadata.DEFAULT_SCHEMA_NAME);
+                String columnName = columnHandle.getOriginalColumnName();
+                List<String> remappedColumnName = splitFilterProvider.remapColumnName(tableScope, columnName);
+                newOrderings.add(new ClpTopNSpec.Ordering(remappedColumnName, toClpOrder(ord.getSortOrder())));
+            }
+
+            if (existingTopN.isPresent()) {
+                ClpTopNSpec ex = existingTopN.get();
+                if (!sameOrdering(ex.orderings, newOrderings)) {
+                    return node.replaceChildren(ImmutableList.of(rewrittenSource)); // leave existing as-is
+                }
+                long mergedLimit = Math.min(ex.limit, node.getCount());
+                if (mergedLimit == ex.limit) {
+                    // No change needed; keep current layout/spec
+                    return node.replaceChildren(ImmutableList.of(rewrittenSource));
+                }
+
+                // Tighten the limit on the layout
+                ClpTopNSpec tightened = new ClpTopNSpec(mergedLimit, ex.orderings);
+                ClpTableHandle clpHandle = (ClpTableHandle) tableHandle.getConnectorHandle();
+                ClpTableLayoutHandle newLayout =
+                        new ClpTableLayoutHandle(clpHandle, kql, metadataSql, true, Optional.of(tightened));
+
+                TableScanNode newScan = new TableScanNode(
+                        scan.getSourceLocation(),
+                        idAllocator.getNextId(),
+                        new TableHandle(
+                                tableHandle.getConnectorId(),
+                                clpHandle,
+                                tableHandle.getTransaction(),
+                                Optional.of(newLayout)),
+                        scan.getOutputVariables(),
+                        scan.getAssignments(),
+                        scan.getTableConstraints(),
+                        scan.getCurrentConstraint(),
+                        scan.getEnforcedConstraint(),
+                        scan.getCteMaterializationInfo());
+
+                PlanNode newSource = newScan;
+                if (filter != null) {
+                    newSource = new FilterNode(filter.getSourceLocation(), idAllocator.getNextId(), newSource, filter.getPredicate());
+                }
+                if (project != null) {
+                    newSource = new ProjectNode(
+                            project.getSourceLocation(),
+                            idAllocator.getNextId(),
+                            newSource,
+                            project.getAssignments(),
+                            project.getLocality());
+                }
+
+                return new TopNNode(node.getSourceLocation(), idAllocator.getNextId(), newSource, node.getCount(), node.getOrderingScheme(), node.getStep());
+            }
+
+            ClpTopNSpec spec = new ClpTopNSpec(node.getCount(), newOrderings);
+            ClpTableHandle clpHandle = (ClpTableHandle) tableHandle.getConnectorHandle();
+            ClpTableLayoutHandle newLayout =
+                    new ClpTableLayoutHandle(clpHandle, kql, metadataSql, true, Optional.of(spec));
+
+            TableScanNode newScanNode = new TableScanNode(
+                    scan.getSourceLocation(),
+                    idAllocator.getNextId(),
+                    new TableHandle(
+                            tableHandle.getConnectorId(),
+                            clpHandle,
+                            tableHandle.getTransaction(),
+                            Optional.of(newLayout)),
+                    scan.getOutputVariables(),
+                    scan.getAssignments(),
+                    scan.getTableConstraints(),
+                    scan.getCurrentConstraint(),
+                    scan.getEnforcedConstraint(),
+                    scan.getCteMaterializationInfo());
+
+            PlanNode newSource = newScanNode;
+            if (filter != null) {
+                newSource = new FilterNode(filter.getSourceLocation(), idAllocator.getNextId(), newSource, filter.getPredicate());
+            }
+            if (project != null) {
+                newSource = new ProjectNode(project.getSourceLocation(), idAllocator.getNextId(), newSource, project.getAssignments(), project.getLocality());
+            }
+
+            return new TopNNode(node.getSourceLocation(), idAllocator.getNextId(), newSource, node.getCount(), node.getOrderingScheme(), node.getStep());
+        }
+
         private PlanNode processFilter(FilterNode filterNode, TableScanNode tableScanNode)
         {
             hasVisitedFilter = true;
@@ -114,21 +282,23 @@ public class ClpComputePushDown
 
             String tableScope = CONNECTOR_NAME + "." + clpTableHandle.getSchemaTableName().toString();
             Map<VariableReferenceExpression, ColumnHandle> assignments = tableScanNode.getAssignments();
+            Set<String> metadataColumnNames = splitFilterProvider.getColumnNames(tableScope);
 
             ClpExpression clpExpression = filterNode.getPredicate().accept(
                     new ClpFilterToKqlConverter(
                             functionResolution,
                             functionManager,
                             assignments,
-                            splitFilterProvider.getColumnNames(tableScope)),
+                            metadataColumnNames),
                     null);
+
             Optional<String> kqlQuery = clpExpression.getPushDownExpression();
             Optional<String> metadataSqlQuery = clpExpression.getMetadataSqlQuery();
             Optional<RowExpression> remainingPredicate = clpExpression.getRemainingExpression();
 
             // Perform required metadata filter checks before handling the KQL query (if kqlQuery
             // isn't present, we'll return early, skipping subsequent checks).
-            splitFilterProvider.checkContainsRequiredFilters(ImmutableSet.of(tableScope), metadataSqlQuery.orElse(""));
+            splitFilterProvider.checkContainsRequiredFilters(ImmutableSet.of(tableScope), clpExpression.getPushDownVariables());
             boolean hasMetadataFilter = metadataSqlQuery.isPresent() && !metadataSqlQuery.get().isEmpty();
             if (hasMetadataFilter) {
                 metadataSqlQuery = Optional.of(splitFilterProvider.remapSplitFilterPushDownExpression(tableScope, metadataSqlQuery.get()));
@@ -140,7 +310,12 @@ public class ClpComputePushDown
                     log.debug("KQL query: %s", kqlQuery.get());
                 }
 
-                ClpTableLayoutHandle layoutHandle = new ClpTableLayoutHandle(clpTableHandle, kqlQuery, metadataSqlQuery);
+                ClpTableLayoutHandle layoutHandle = new ClpTableLayoutHandle(
+                        clpTableHandle,
+                        kqlQuery,
+                        metadataSqlQuery,
+                        metadataColumnNames.equals(clpExpression.getPushDownVariables()),
+                        Optional.empty());
                 TableHandle newTableHandle = new TableHandle(
                         tableHandle.getConnectorId(),
                         clpTableHandle,
@@ -169,6 +344,61 @@ public class ClpComputePushDown
             }
             else {
                 return tableScanNode;
+            }
+        }
+
+        private boolean areIdents(ProjectNode project, List<Ordering> vars)
+        {
+            for (Ordering ord : vars) {
+                VariableReferenceExpression out = ord.getVariable();
+                RowExpression expr = project.getAssignments().get(out);
+                if (!(expr instanceof VariableReferenceExpression)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private boolean sameOrdering(List<ClpTopNSpec.Ordering> a, List<ClpTopNSpec.Ordering> b)
+        {
+            if (a.size() != b.size()) {
+                return false;
+            }
+            for (int i = 0; i < a.size(); i++) {
+                ClpTopNSpec.Ordering x = a.get(i);
+                ClpTopNSpec.Ordering y = b.get(i);
+                if (!Objects.equals(x.columns, y.columns)) {
+                    return false;
+                }
+                if (x.order != y.order) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private Optional<VariableReferenceExpression> resolveThroughProject(ProjectNode project, VariableReferenceExpression out)
+        {
+            if (project == null) {
+                return Optional.empty();
+            }
+            RowExpression expr = project.getAssignments().get(out);
+            if (expr instanceof VariableReferenceExpression) {
+                return Optional.of((VariableReferenceExpression) expr);
+            }
+            return Optional.empty();
+        }
+
+        private ClpTopNSpec.Order toClpOrder(SortOrder so)
+        {
+            switch (so) {
+                case ASC_NULLS_FIRST:
+                case ASC_NULLS_LAST:
+                    return ClpTopNSpec.Order.ASC;
+                case DESC_NULLS_FIRST:
+                case DESC_NULLS_LAST:
+                    return ClpTopNSpec.Order.DESC;
+                default: throw new IllegalArgumentException("Unknown sort order: " + so);
             }
         }
     }
