@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.plugin.clp.optimization;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.List;
 import java.util.Objects;
 
@@ -38,10 +41,16 @@ public class ClpTopNSpec
      */
     public static final class Ordering
     {
+        @JsonProperty
         public final List<String> columns;
+
+        @JsonProperty
         public final Order order;
 
-        public Ordering(List<String> columns, Order order)
+        @JsonCreator
+        public Ordering(
+                @JsonProperty("columns") List<String> columns,
+                @JsonProperty("order") Order order)
         {
             this.columns = requireNonNull(columns, "column is null");
             this.order = requireNonNull(order, "order is null");
@@ -73,10 +82,16 @@ public class ClpTopNSpec
         }
     }
 
+    @JsonProperty
     public final long limit;
+
+    @JsonProperty
     public final List<Ordering> orderings;
 
-    public ClpTopNSpec(long limit, List<Ordering> orderings)
+    @JsonCreator
+    public ClpTopNSpec(
+            @JsonProperty("limit") long limit,
+            @JsonProperty("orderings") List<Ordering> orderings)
     {
         if (limit <= 0) {
             throw new IllegalArgumentException("limit must be > 0");
