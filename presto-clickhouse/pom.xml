@@ -4,7 +4,7 @@
     <parent>
         <artifactId>presto-root</artifactId>
         <groupId>com.facebook.presto</groupId>
-        <version>0.293.0-yscope-SNAPSHOT</version>
+        <version>0.293.1-yscope-SNAPSHOT</version>
     </parent>
 
     <artifactId>presto-clickhouse</artifactId>
